@@ -1,4 +1,240 @@
 # SIH2025
+# Image Segmentation Model (MDL)
+
+A TensorFlow-based deep learning model for semantic image segmentation that predicts both pixel-wise masks and image-level labels.
+
+## Project Overview
+
+This model performs **dual-task learning**:
+1. **Semantic Segmentation**: Predicts pixel-wise masks to identify regions in images
+2. **Classification**: Assigns labels to the entire image
+
+The pipeline includes data loading, augmentation, model training, and comprehensive visualization tools.
+
+## Architecture
+
+### Model Components
+- **Input**: RGB images (256x256x3)
+- **Encoder**: Feature extraction layers
+- **Decoder**: Upsampling to original resolution
+- **Dual Outputs**:
+  - Segmentation mask (256x256x1) - binary pixel predictions
+  - Classification labels (binary-class probabilities)
+
+### Key Parameters
+```python
+IMAGE_SIZE = 256
+BATCH_SIZE = 8
+ADAPTIVE_THRESH = 0.5
+BORDER_PADDING = [0, 0, 0, 0]  # Top, bottom, left, right
+```
+
+## Dependencies
+
+```bash
+pip install tensorflow numpy matplotlib pillow
+```
+
+**Required versions**:
+- TensorFlow 2.x
+- Python 3.7+
+- CUDA (optional, for GPU acceleration)
+
+## Dataset Structure
+
+Your data must be organized as follows:
+
+```
+project_root/
+├── train/
+│   ├── images/     # Training images (.jpg, .png)
+│   ├── masks/      # Binary segmentation masks (.png)
+│   └── labels/     # Label files (.txt or similar)
+├── val/
+│   ├── images/     # Validation images
+│   ├── masks/      # Validation masks
+│   └── labels/     # Validation labels
+└── test/
+    ├── images/     # Test images
+    ├── masks/      # Test masks  
+    └── labels/     # Test labels
+```
+
+**Data Format**:
+- **Images**: RGB images, any size (will be resized to 256x256)
+- **Masks**: Grayscale images with values 0 (background) or 255 (foreground)
+- **Labels**: Text files containing class labels or numeric values
+
+## Core Functions Explained
+
+### 1. Data Loading Functions
+
+#### `load_and_preprocess_image(image_path)`
+- Reads image file from disk
+- Decodes to RGB format
+- Resizes to 256x256
+- **Normalizes to [0, 1]** range (divides by 255.0)
+- Returns: Tensor of shape (256, 256, 3)
+
+#### `load_mask(mask_path)`
+- Reads mask file as grayscale
+- Resizes to 256x256
+- **Converts to binary**: values > 0 become 1, others stay 0
+- Returns: Binary tensor of shape (256, 256, 1)
+
+#### `load_label(label_path)`
+- Reads label file
+- Parses label data (format depends on your dataset)
+- Returns: Label tensor
+
+### 2. Data Augmentation
+
+#### `augment(image, mask, label)`
+Applies random transformations to increase dataset diversity:
+- **Random Horizontal Flip**: 50% chance to flip image and mask left-right
+- **Random Vertical Flip**: 50% chance to flip image and mask up-down
+- **Synchronized**: Same transformation applied to both image and mask
+- Labels remain unchanged during augmentation
+
+**Why augmentation?**
+- Prevents overfitting
+- Increases effective dataset size
+- Improves model generalization
+
+### 3. Dataset Pipeline
+
+#### `create_dataset(image_files, mask_files, label_files)`
+Creates optimized TensorFlow dataset:
+```python
+dataset = tf.data.Dataset.from_tensor_slices((image_files, mask_files, label_files))
+dataset = dataset.map(load_data)           # Load files
+dataset = dataset.map(augment)             # Apply augmentation
+dataset = dataset.batch(BATCH_SIZE)        # Create batches
+dataset = dataset.prefetch(AUTOTUNE)       # Optimize loading
+```
+
+**Performance optimizations**:
+- `prefetch()`: Loads next batch while GPU processes current batch
+- `AUTOTUNE`: Automatically optimizes buffer size
+- Reduces training time by ~30-40%
+
+## Training Process
+
+### Training Loop
+```python
+# 1. Prepare datasets
+train_dataset = create_dataset(train_imgs, train_masks, train_labels)
+val_dataset = create_dataset(val_imgs, val_masks, val_labels)
+
+# 2. Compile model
+model.compile(
+    optimizer='adam',
+    loss={
+        'mask_output': 'binary_crossentropy',
+        'label_output': 'categorical_crossentropy'
+    },
+    metrics=['accuracy']
+)
+
+# 3. Train
+history = model.fit(
+    train_dataset,
+    validation_data=val_dataset,
+    epochs=50,
+    callbacks=[early_stopping, checkpoint]
+)
+```
+
+### Loss Functions
+- **Loss**: Binary cross-entropy (for pixel-wise predictions)
+- **Disc Loss**:Specialized loss function
+- **Total Loss**: Weighted combination of both losses
+
+### Metrics Tracked
+- Training loss (both mask and label)
+- Validation loss
+- Training accuracy
+- Validation accuracy
+- Logged every epoch for monitoring
+- Jaccard Coefficient
+
+## Visualization Features
+
+### 1. Training Data Inspection
+```python
+# Display random samples from training set
+for image, mask, label in train_dataset.take(1):
+    plt.subplot(1, 3, 1)
+    plt.imshow(image[0])
+    plt.title("Image")
+    
+    plt.subplot(1, 3, 2)
+    plt.imshow(mask[0], cmap='gray')
+    plt.title("Mask")
+    
+    plt.subplot(1, 3, 3)
+    plt.imshow(label[0])
+    lt.title("Label")
+```
+
+### 2. Training Progress Plots
+- **Loss curves**: Training vs Validation loss over epochs
+- **Helps identify**:
+  - Overfitting (validation loss increases while training loss decreases)
+  - Underfitting (both losses remain high)
+  - Optimal stopping point
+
+### 3. Prediction Visualization
+```python
+# Compare predictions with ground truth
+predictions = model.predict(test_image)
+mask_pred = predictions['mask_output']
+label_pred = predictions['label_output']
+```
+
+## Model Inference
+
+### Making Predictions
+```python
+# Load and preprocess test image
+test_img = load_and_preprocess_image("test.jpg")
+test_img = tf.expand_dims(test_img, 0)  # Add batch dimension
+
+# Predict
+mask_pred, label_pred = model.predict(test_img)
+
+# Post-process mask
+mask_binary = (mask_pred > 0.5).astype(np.uint8) * 255
+
+# Save results
+cv2.imwrite("output_mask.png", mask_binary)
+```
+
+## Important Configuration Details
+
+### Image Preprocessing
+- **CV2_IMREAD_COLOR**: Reads images as RGB
+- **CV2_IMREAD_GRAYSCALE**: Reads masks as grayscale
+- **Normalization**: Critical for model convergence (0-1 range)
+
+### Mask Processing
+- **Binary threshold**: 0.5 (values > 0.5 → foreground, else background)
+- **Output format**: Single channel (256, 256, 1)
+- **Values**: 0 or 1 only
+
+
+
+## Results & Evaluation
+
+### Metrics to Track
+- **IoU (Intersection over Union)**: For segmentation quality
+- **Dice Coefficient**: Alternative segmentation metric
+- **Accuracy**: For label classification
+
+
+
+
+
 # CGWB-Compliant Rainwater Harvesting Recommendation System
 
 ## Overview
